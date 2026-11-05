@@ -6,8 +6,16 @@ import random
 import string
 import sys
 import traceback
+import time
 
-import zendriver as zd
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from pyvirtualdisplay import Display
+
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
@@ -68,96 +76,91 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 # --- BROWSER AUTOMATION ---
-async def process_flowfame_with_zendriver(link):
+def process_flowfame_with_selenium(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
-    browser = None
-    max_retries = 3
     
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Browser launch attempt {attempt + 1}/{max_retries}...")
-            # Hardcode the correct Chrome path for GitHub Actions
-            chrome_path = "/usr/bin/google-chrome"
-            
-            # Start zendriver with explicit path and sandbox disabled
-            browser = await zd.start(
-                browser_executable_path=chrome_path,
-                headless=True,
-                sandbox=False,
-                browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
-            logger.info("Browser connected successfully.")
-            break
-        except Exception as e:
-            logger.warning(f"Browser launch attempt {attempt + 1} failed: {e}")
-            if attempt == max_retries - 1:
-                logger.critical("All browser launch attempts failed. Giving up on this cycle.")
-                return False
-            await asyncio.sleep(5)
+    # Start a virtual display for the browser
+    display = Display(visible=0, size=(1920, 1080))
+    display.start()
+    logger.info("Virtual display started.")
 
-    if not browser:
-        return False
-
+    options = Options()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    
+    driver = None
     try:
-        tab = await browser.get(TARGET_URL)
-        logger.info("Page loaded. Waiting 5 seconds for Cloudflare to initialize...")
-        await tab.sleep(5)
+        logger.info("Launching Chrome driver...")
+        driver = webdriver.Chrome(options=options)
+        logger.info("Browser connected successfully.")
+        
+        driver.get(TARGET_URL)
+        logger.info("Page loaded. Waiting for elements...")
+        
+        # Wait for Cloudflare to settle
+        time.sleep(5)
 
-        # --- CAPTCHA CLICK ---
+        # Attempt CAPTCHA click (if present)
         try:
-            logger.info("Searching for Cloudflare Turnstile iframe...")
-            iframe = await tab.select("iframe[src*='challenges.cloudflare.com']", timeout=15)
+            iframe = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='challenges.cloudflare.com']"))
+            )
             if iframe:
-                logger.info("Turnstile iframe found. Clicking...")
-                await iframe.mouse_click()
-                logger.info("Clicked. Waiting 10 seconds for verification...")
-                await tab.sleep(10)
-            else:
-                logger.info("No iframe found. It might be invisible or passed automatically.")
-        except Exception as e:
-            logger.warning(f"CAPTCHA interaction note: {e}")
+                logger.info("Turnstile iframe found. Attempting to click...")
+                driver.execute_script("arguments[0].click();", iframe)
+                time.sleep(10)
+        except TimeoutException:
+            logger.info("No Turnstile iframe found. It might be invisible or passed automatically.")
 
-        # --- FILL FORM ---
+        # Find input field
         logger.info("Searching for Telegram link input...")
-        link_input = await tab.select("input[placeholder*='t.me']", timeout=15)
-        if not link_input:
-            logger.error("Could not find the Telegram link input field. Saving screenshot...")
-            await tab.save_screenshot("error_input.png")
-            return False
+        link_input = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='t.me']"))
+        )
+        link_input.clear()
+        link_input.send_keys(link)
+        time.sleep(1)
 
-        await link_input.send_keys(link)
-        await tab.sleep(1)
-
+        # Find submit button
         logger.info("Searching for submit button...")
-        submit_btn = await tab.select("button[type='submit']", timeout=10)
-        if not submit_btn:
-            logger.error("Could not find submit button. Saving screenshot...")
-            await tab.save_screenshot("error_submit.png")
-            return False
-
-        await submit_btn.click()
+        submit_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
+        )
+        submit_btn.click()
         logger.info("Form submitted. Waiting for confirmation...")
 
-        # --- WAIT FOR SUCCESS ---
-        for i in range(24):
-            await tab.sleep(5)
-            page_text = await tab.evaluate("document.body.innerText")
+        # Wait for success message
+        success = False
+        for _ in range(24):  # Wait up to 2 minutes
+            time.sleep(5)
+            page_text = driver.find_element(By.TAG_NAME, "body").text
             if "on the way" in page_text or "free claims remaining" in page_text:
                 logger.info("🎉 Members claimed successfully!")
-                return True
+                success = True
+                break
         
-        logger.warning("Timeout waiting for confirmation message. Saving screenshot...")
-        await tab.save_screenshot("error_timeout.png")
-        return False
+        if not success:
+            logger.warning("Timeout waiting for confirmation message.")
+            driver.save_screenshot("error_timeout.png")
+            logger.error("Saved screenshot to error_timeout.png")
+        
+        return success
 
     except Exception as e:
         logger.critical(f"Browser execution error: {e}")
         logger.critical(traceback.format_exc())
+        if driver:
+            driver.save_screenshot("error_exception.png")
         return False
     finally:
-        if browser:
-            await browser.stop()
+        if driver:
+            driver.quit()
             logger.info("Browser closed.")
+        display.stop()
+        logger.info("Virtual display stopped.")
 
 # --- MAIN EXECUTION ---
 async def main():
@@ -231,7 +234,7 @@ async def main():
 
     # Claim Members
     link_to_claim = f"https://t.me/{state['current_username']}"
-    success = await process_flowfame_with_zendriver(link_to_claim)
+    success = process_flowfame_with_selenium(link_to_claim)
 
     # Save State ONLY if successful
     if success:
