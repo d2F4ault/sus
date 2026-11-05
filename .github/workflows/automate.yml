@@ -2,23 +2,22 @@ name: Hourly Telegram Claimer
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs at the start of every hour
-  workflow_dispatch: # Allows you to manually trigger it for testing
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-automation:
-    # Using 22.04 to avoid the broken package dependencies in Ubuntu 24.04
     runs-on: ubuntu-22.04
-    timeout-minutes: 15 # Prevents the job from hanging forever if something breaks
+    timeout-minutes: 15
     
     permissions:
-      contents: write # Required to push the updated state.json back to the repo
+      contents: write
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Cloudflare WARP (VPN)
+      - name: Setup Cloudflare WARP
         uses: fscarmen/warp-on-actions@v1.4
         with:
           mode: 'wireguard'
@@ -27,7 +26,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # Automatically caches pip dependencies to speed up runs
+          cache: 'pip'
 
       - name: Install System Dependencies (Chrome & Xvfb)
         run: |
@@ -55,13 +54,12 @@ jobs:
         run: python main.py
 
       - name: Commit and Push State Changes
-        if: always() # Run this step even if the Python script failed
+        if: always()
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add state.json
           
-          # Only commit if there are actual changes to prevent workflow failures
           if ! git diff --staged --quiet; then
             git commit -m "Update automation state [skip ci]"
             git push
