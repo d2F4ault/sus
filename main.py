@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from turnstile_solver import solve
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -72,31 +73,38 @@ def save_state(state):
     with open("state.json", "w") as f:
         json.dump(state, f, indent=2)
 
-# --- BROWSER AUTOMATION WITH SELENIUMBASE ---
-def process_flowfame_with_seleniumbase(link):
+# --- BROWSER AUTOMATION WITH turnstile_solver ---
+def process_flowfame_with_solver(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
     
-    # Initialize SeleniumBase Driver with Undetected Chrome (uc) mode
     driver = None
     try:
-        logger.info("Launching SeleniumBase Driver...")
+        logger.info("Launching SeleniumBase Driver in UC Mode...")
         driver = Driver(uc=True, headless=True)
         logger.info("Browser connected successfully.")
         
         driver.get(TARGET_URL)
         logger.info("Page loaded. Waiting for initial elements...")
         
-        # --- CAPTCHA SOLVING ---
-        # SeleniumBase's solve_captcha() uses CDP to handle Turnstile
-        logger.info("Attempting to solve Cloudflare Turnstile with SeleniumBase...")
-        try:
-            driver.solve_captcha()  # Built-in method to handle CAPTCHAs
-            logger.info("CAPTCHA solving attempted.")
-        except Exception as e:
-            logger.warning(f"CAPTCHA solver note: {e}. Proceeding anyway...")
+        # --- SOLVE CLOUDFLARE TURNSTILE ---
+        logger.info("Attempting to solve Cloudflare Turnstile with turnstile_solver...")
+        success = solve(
+            driver,
+            detect_timeout=10,   # Timeout for detecting the widget
+            solve_timeout=30,    # Timeout for solving the challenge
+            interval=1,
+            verify=True,         # Verify after solving
+            click_method="cdp",  # Use CDP for clicking (ideal for headless)
+            enable_logging=True
+        )
+        
+        if not success:
+            logger.error("Failed to solve CAPTCHA. Saving screenshot...")
+            driver.save_screenshot("error_captcha.png")
+            return False
+        logger.info("CAPTCHA solved successfully.")
 
-        # --- WAIT FOR PAGE TO BE FULLY INTERACTABLE ---
-        # Use explicit wait for the input field, indicating the page is ready
+        # --- WAIT FOR PAGE TO BE INTERACTABLE ---
         logger.info("Waiting for Telegram link input to be interactable...")
         wait = WebDriverWait(driver, 20)
         link_input = wait.until(
@@ -217,7 +225,7 @@ async def main():
 
     # Claim Members
     link_to_claim = f"https://t.me/{state['current_username']}"
-    success = process_flowfame_with_seleniumbase(link_to_claim)
+    success = process_flowfame_with_solver(link_to_claim)
 
     # Save State ONLY if successful
     if success:
