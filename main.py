@@ -17,7 +17,6 @@ from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import (
     CheckUsernameRequest,
-    CreateChannelRequest,
     UpdateUsernameRequest,
 )
 from telethon.tl.types import InputPeerChannel
@@ -35,9 +34,11 @@ api_id_str = os.environ.get("TELEGRAM_API_ID", "").strip()
 api_hash = os.environ.get("TELEGRAM_API_HASH", "").strip()
 phone = os.environ.get("TELEGRAM_PHONE", "").strip()
 session_string = os.environ.get("TELEGRAM_SESSION", "").strip()
+initial_channel = os.environ.get("INITIAL_CHANNEL_USERNAME", "").strip().replace("@", "")
 
-if not all([api_id_str, api_hash, phone, session_string]):
+if not all([api_id_str, api_hash, phone, session_string, initial_channel]):
     logger.critical("❌ CRITICAL: One or more GitHub Secrets are missing or empty!")
+    logger.critical("Required: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE, TELEGRAM_SESSION, INITIAL_CHANNEL_USERNAME")
     sys.exit(1)
 
 try:
@@ -49,6 +50,7 @@ except ValueError:
 API_HASH = api_hash
 PHONE = phone
 SESSION_STRING = session_string
+INITIAL_CHANNEL = initial_channel
 MAX_CYCLES = 30
 TARGET_URL = "https://flowfame.com/free-telegram-members"
 
@@ -75,7 +77,6 @@ def save_state(state):
 def process_flowfame_with_sb(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
     
-    # SB context manager automatically handles virtual display on Linux
     try:
         with SB(uc=True, headless=True, incognito=True) as sb:
             logger.info("Browser connected successfully via SB Manager.")
@@ -148,7 +149,7 @@ async def main():
 
     logger.info(f"--- 🔄 Starting Cycle {current_cycle + 1}/{MAX_CYCLES} ---")
 
-    # Initialize Telegram
+    # Initialize Telegram Client
     try:
         session = StringSession(SESSION_STRING)
         client = TelegramClient(session, API_ID, API_HASH)
@@ -158,47 +159,53 @@ async def main():
         logger.critical(f"Failed to connect to Telegram: {e}")
         sys.exit(1)
 
-    # Create or Update Channel
     try:
-        if current_cycle == 0:
-            logger.info("Creating new channel...")
-            result = await client(CreateChannelRequest(
-                title="Auto Claim Channel", about="Temporary channel", broadcast=True
-            ))
-            channel = result.chats[0]
-            state["channel_id"] = channel.id
-            state["access_hash"] = channel.access_hash
-            
-            current_username = generate_random_username()
-            peer = InputPeerChannel(channel.id, channel.access_hash)
-            
-            if await client(CheckUsernameRequest(peer, current_username)):
-                await client(UpdateUsernameRequest(peer, current_username))
-                state["current_username"] = current_username
-                logger.info(f"Channel made public: https://t.me/{current_username}")
-            else:
-                logger.error("Failed to set initial username (taken). Exiting.")
+        # If we don't have a channel saved in state yet, resolve the initial one
+        if not state.get("channel_id"):
+            logger.info(f"First run: Resolving provided channel @{INITIAL_CHANNEL}...")
+            try:
+                entity = await client.get_entity(INITIAL_CHANNEL)
+                state["channel_id"] = entity.id
+                state["access_hash"] = entity.access_hash
+                state["current_username"] = INITIAL_CHANNEL
+                save_state(state)
+                logger.info("Channel resolved and state updated.")
+            except Exception as e:
+                logger.critical(f"Failed to resolve channel @{INITIAL_CHANNEL}. Is it public and spelled correctly? Error: {e}")
+                await client.disconnect()
                 sys.exit(1)
         else:
-            logger.info("Rotating channel username...")
+            # We already have the channel. Rotate the username.
+            logger.info("Existing channel found. Rotating username for a fresh link...")
             peer = InputPeerChannel(state["channel_id"], state["access_hash"])
-            new_username = generate_random_username()
             
-            if await client(CheckUsernameRequest(peer, new_username)):
-                await client(UpdateUsernameRequest(peer, new_username))
-                state["current_username"] = new_username
-                logger.info(f"Username updated: https://t.me/{new_username}")
-            else:
-                logger.error("Failed to update username (taken). Exiting.")
+            # Retry loop for finding an available username
+            new_username = None
+            for attempt in range(5):
+                test_username = generate_random_username()
+                if await client(CheckUsernameRequest(peer, test_username)):
+                    new_username = test_username
+                    break
+                logger.warning(f"Username {test_username} taken. Retrying...")
+                
+            if not new_username:
+                logger.error("Failed to find an available username after 5 attempts.")
                 sys.exit(1)
                 
-    except FloodWaitError as e:
-        logger.error(f"⚠️ Telegram FloodWait: You must wait {e.seconds} seconds before doing this again.")
-        logger.error("Skipping this cycle. The next scheduled run will try again.")
-        await client.disconnect()
-        sys.exit(0)
+            try:
+                await client(UpdateUsernameRequest(peer, new_username))
+                state["current_username"] = new_username
+                save_state(state)
+                logger.info(f"Username successfully updated: https://t.me/{new_username}")
+            except FloodWaitError as e:
+                logger.error(f"⚠️ Telegram FloodWait on username change: {e.seconds} seconds.")
+                sys.exit(0) # Exit cleanly so next run tries again
+            except Exception as e:
+                logger.error(f"Failed to update username: {e}")
+                sys.exit(1)
+                
     except Exception as e:
-        logger.critical(f"Telegram Error: {e}")
+        logger.critical(f"Telegram Error during processing: {e}")
         await client.disconnect()
         sys.exit(1)
     finally:
