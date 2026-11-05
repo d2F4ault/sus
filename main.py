@@ -7,7 +7,7 @@ import string
 import sys
 import traceback
 
-import nodriver as uc
+import zendriver as zd
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
@@ -53,7 +53,6 @@ def generate_random_username():
     return "ch_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
 
 def load_state():
-    """Safely loads the state, creating a new one if missing or corrupted."""
     if not os.path.exists("state.json"):
         logger.warning("state.json missing. Creating a new one.")
         return {"cycle": 0, "channel_id": None, "access_hash": None, "current_username": None}
@@ -69,40 +68,36 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 # --- BROWSER AUTOMATION ---
-async def process_flowfame_with_nodriver(link):
+async def process_flowfame_with_zendriver(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
     browser = None
     max_retries = 3
     
-    # 1. Robust Browser Launch with Retries
     for attempt in range(max_retries):
         try:
             logger.info(f"Browser launch attempt {attempt + 1}/{max_retries}...")
-            config = uc.Config(
+            # Hardcode the correct Chrome path for GitHub Actions
+            chrome_path = "/usr/bin/google-chrome"
+            
+            # Start zendriver with explicit path and sandbox disabled
+            browser = await zd.start(
+                browser_executable_path=chrome_path,
                 headless=True,
-                sandbox=False, # Critical for GitHub Actions (runs as root)
-                browser_args=[
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                    "--disable-gpu",
-                    "--disable-software-rasterizer",
-                    "--window-size=1920,1080"
-                ]
+                sandbox=False,
+                browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
-            browser = await uc.start(config=config)
             logger.info("Browser connected successfully.")
-            break 
+            break
         except Exception as e:
             logger.warning(f"Browser launch attempt {attempt + 1} failed: {e}")
             if attempt == max_retries - 1:
                 logger.critical("All browser launch attempts failed. Giving up on this cycle.")
                 return False
-            await asyncio.sleep(5) # Wait before retrying
+            await asyncio.sleep(5)
 
     if not browser:
         return False
 
-    # 2. Interact with the Page
     try:
         tab = await browser.get(TARGET_URL)
         logger.info("Page loaded. Waiting 5 seconds for Cloudflare to initialize...")
@@ -144,7 +139,7 @@ async def process_flowfame_with_nodriver(link):
         logger.info("Form submitted. Waiting for confirmation...")
 
         # --- WAIT FOR SUCCESS ---
-        for i in range(24): # Wait up to 2 minutes (24 * 5s)
+        for i in range(24):
             await tab.sleep(5)
             page_text = await tab.evaluate("document.body.innerText")
             if "on the way" in page_text or "free claims remaining" in page_text:
@@ -225,7 +220,7 @@ async def main():
         logger.error(f"⚠️ Telegram FloodWait: You must wait {e.seconds} seconds before doing this again.")
         logger.error("Skipping this cycle. The next scheduled run will try again.")
         await client.disconnect()
-        sys.exit(0) # Exit gracefully so it doesn't mark as 'Failed', just retries next hour
+        sys.exit(0)
     except Exception as e:
         logger.critical(f"Telegram Error: {e}")
         await client.disconnect()
@@ -236,7 +231,7 @@ async def main():
 
     # Claim Members
     link_to_claim = f"https://t.me/{state['current_username']}"
-    success = await process_flowfame_with_nodriver(link_to_claim)
+    success = await process_flowfame_with_zendriver(link_to_claim)
 
     # Save State ONLY if successful
     if success:
