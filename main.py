@@ -6,15 +6,12 @@ import random
 import string
 import sys
 import traceback
-import time
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from seleniumbase import Driver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-from pyvirtualdisplay import Display
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -75,67 +72,55 @@ def save_state(state):
     with open("state.json", "w") as f:
         json.dump(state, f, indent=2)
 
-# --- BROWSER AUTOMATION ---
-def process_flowfame_with_selenium(link):
+# --- BROWSER AUTOMATION WITH SELENIUMBASE ---
+def process_flowfame_with_seleniumbase(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
     
-    # Start a virtual display for the browser
-    display = Display(visible=0, size=(1920, 1080))
-    display.start()
-    logger.info("Virtual display started.")
-
-    options = Options()
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    
+    # Initialize SeleniumBase Driver with Undetected Chrome (uc) mode
     driver = None
     try:
-        logger.info("Launching Chrome driver...")
-        driver = webdriver.Chrome(options=options)
+        logger.info("Launching SeleniumBase Driver...")
+        driver = Driver(uc=True, headless=True)
         logger.info("Browser connected successfully.")
         
         driver.get(TARGET_URL)
-        logger.info("Page loaded. Waiting for elements...")
+        logger.info("Page loaded. Waiting for initial elements...")
         
-        # Wait for Cloudflare to settle
-        time.sleep(5)
-
-        # Attempt CAPTCHA click (if present)
+        # --- CAPTCHA SOLVING ---
+        # SeleniumBase's solve_captcha() uses CDP to handle Turnstile
+        logger.info("Attempting to solve Cloudflare Turnstile with SeleniumBase...")
         try:
-            iframe = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='challenges.cloudflare.com']"))
-            )
-            if iframe:
-                logger.info("Turnstile iframe found. Attempting to click...")
-                driver.execute_script("arguments[0].click();", iframe)
-                time.sleep(10)
-        except TimeoutException:
-            logger.info("No Turnstile iframe found. It might be invisible or passed automatically.")
+            driver.solve_captcha()  # Built-in method to handle CAPTCHAs
+            logger.info("CAPTCHA solving attempted.")
+        except Exception as e:
+            logger.warning(f"CAPTCHA solver note: {e}. Proceeding anyway...")
 
-        # Find input field
-        logger.info("Searching for Telegram link input...")
-        link_input = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "input[placeholder*='t.me']"))
+        # --- WAIT FOR PAGE TO BE FULLY INTERACTABLE ---
+        # Use explicit wait for the input field, indicating the page is ready
+        logger.info("Waiting for Telegram link input to be interactable...")
+        wait = WebDriverWait(driver, 20)
+        link_input = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[placeholder*='t.me']"))
         )
+        logger.info("Input field is ready.")
+
+        # Fill the form
         link_input.clear()
         link_input.send_keys(link)
-        time.sleep(1)
+        logger.info("Link entered.")
 
-        # Find submit button
+        # --- SUBMIT FORM ---
         logger.info("Searching for submit button...")
-        submit_btn = WebDriverWait(driver, 10).until(
+        submit_btn = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
         )
         submit_btn.click()
         logger.info("Form submitted. Waiting for confirmation...")
 
-        # Wait for success message
+        # --- WAIT FOR SUCCESS CONFIRMATION ---
         success = False
         for _ in range(24):  # Wait up to 2 minutes
-            time.sleep(5)
+            driver.sleep(5)
             page_text = driver.find_element(By.TAG_NAME, "body").text
             if "on the way" in page_text or "free claims remaining" in page_text:
                 logger.info("🎉 Members claimed successfully!")
@@ -159,8 +144,6 @@ def process_flowfame_with_selenium(link):
         if driver:
             driver.quit()
             logger.info("Browser closed.")
-        display.stop()
-        logger.info("Virtual display stopped.")
 
 # --- MAIN EXECUTION ---
 async def main():
@@ -234,7 +217,7 @@ async def main():
 
     # Claim Members
     link_to_claim = f"https://t.me/{state['current_username']}"
-    success = process_flowfame_with_selenium(link_to_claim)
+    success = process_flowfame_with_seleniumbase(link_to_claim)
 
     # Save State ONLY if successful
     if success:
