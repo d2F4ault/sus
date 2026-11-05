@@ -11,27 +11,40 @@ jobs:
     
     permissions:
       contents: write # Required to commit the state.json file
+      actions: write # Recommended for better runner management
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Ensures the state.json is fully available
 
       - name: Setup Cloudflare WARP
         uses: fscarmen/warp-on-actions@v1.4
         with:
-          mode: 'wireguard' # 'client' is also an option
+          mode: 'wireguard'
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
+      - name: Setup Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
       - name: Install Dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
-          # Install Chrome & necessary libraries for nodriver in a CI environment
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable unzip
+
+      - name: Verify Environment
+        run: |
+          echo "Chrome Path: ${{ steps.setup-chrome.outputs.chrome-path }}"
+          google-chrome --version
+          python --version
 
       - name: Run Automation Cycle
         env:
@@ -39,12 +52,13 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_PHONE: ${{ secrets.TELEGRAM_PHONE }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }} # Pass path to script
         run: python main.py
 
       - name: Commit and Push State Changes
+        if: always() # Ensures state is saved even if the script fails
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add state.json
-          # Only commit and push if the file has changed (e.g., the script ran successfully)
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update state for next cycle [skip ci]" && git push)
