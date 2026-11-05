@@ -2,22 +2,19 @@ name: Hourly Telegram Claimer
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs at the start of every hour
-  workflow_dispatch: # Allows manual testing
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write # Required to commit the state.json file
-      actions: write # Recommended for better runner management
+      contents: write
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Ensures the state.json is fully available
 
       - name: Setup Cloudflare WARP
         uses: fscarmen/warp-on-actions@v1.4
@@ -29,22 +26,16 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Setup Chrome
-        id: setup-chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-
-      - name: Install Dependencies
+      - name: Setup Chrome and Dependencies
+        run: |
+          sudo apt-get update
+          # Install essential libraries for Chrome in headless mode
+          sudo apt-get install -y libnss3 libgconf-2-4 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 libgtk-3-0 libgbm-dev libasound2
+          
+      - name: Install Python Dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Verify Environment
-        run: |
-          echo "Chrome Path: ${{ steps.setup-chrome.outputs.chrome-path }}"
-          google-chrome --version
-          python --version
 
       - name: Run Automation Cycle
         env:
@@ -52,13 +43,18 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_PHONE: ${{ secrets.TELEGRAM_PHONE }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }} # Pass path to script
         run: python main.py
 
       - name: Commit and Push State Changes
-        if: always() # Ensures state is saved even if the script fails
+        if: always() # Run this even if the script failed, to save partial state
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add state.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update state for next cycle [skip ci]" && git push)
+          # Only commit if there are actual changes. Prevents "exit code 1" if no changes exist.
+          if ! git diff --staged --quiet; then
+            git commit -m "Update state [skip ci]"
+            git push
+          else
+            echo "No changes to state.json"
+          fi
