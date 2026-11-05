@@ -2,39 +2,48 @@ name: Hourly Telegram Claimer
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *' # Runs at the start of every hour
+  workflow_dispatch: # Allows you to manually trigger it for testing
 
 jobs:
   run-automation:
+    # Using 22.04 to avoid the broken package dependencies in Ubuntu 24.04
     runs-on: ubuntu-22.04
+    timeout-minutes: 15 # Prevents the job from hanging forever if something breaks
     
     permissions:
-      contents: write
+      contents: write # Required to push the updated state.json back to the repo
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Cloudflare WARP
+      - name: Setup Cloudflare WARP (VPN)
         uses: fscarmen/warp-on-actions@v1.4
         with:
           mode: 'wireguard'
 
-      - name: Set up Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip' # Automatically caches pip dependencies to speed up runs
 
-      - name: Setup Chrome and Dependencies
+      - name: Install System Dependencies (Chrome & Xvfb)
         run: |
           sudo apt-get update
-          # Install essential libraries for Chrome in headless mode
-          sudo apt-get install -y libnss3 libgconf-2-4 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 libgtk-3-0 libgbm-dev libasound2
+          # Install virtual display and required Chrome dependencies
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2
           
-      - name: Install Python Dependencies
+          # Install Google Chrome
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=*] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Python Requirements
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Automation Cycle
@@ -46,15 +55,16 @@ jobs:
         run: python main.py
 
       - name: Commit and Push State Changes
-        if: always() # Run this even if the script failed, to save partial state
+        if: always() # Run this step even if the Python script failed
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add state.json
-          # Only commit if there are actual changes. Prevents "exit code 1" if no changes exist.
+          
+          # Only commit if there are actual changes to prevent workflow failures
           if ! git diff --staged --quiet; then
-            git commit -m "Update state [skip ci]"
+            git commit -m "Update automation state [skip ci]"
             git push
           else
-            echo "No changes to state.json"
+            echo "No changes to state.json. Skipping commit."
           fi
