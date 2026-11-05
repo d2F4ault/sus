@@ -9,6 +9,7 @@ import traceback
 
 import nodriver as uc
 from telethon import TelegramClient
+from telethon.sessions import StringSession  # <-- ADDED THIS IMPORT
 from telethon.tl.functions.channels import (
     CheckUsernameRequest,
     CreateChannelRequest,
@@ -24,15 +25,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- SAFE CONFIGURATION LOADING ---
-api_id_str = os.environ.get("TELEGRAM_API_ID", "")
-api_hash = os.environ.get("TELEGRAM_API_HASH", "")
-phone = os.environ.get("TELEGRAM_PHONE", "")
-session_string = os.environ.get("TELEGRAM_SESSION", "")
+api_id_str = os.environ.get("TELEGRAM_API_ID", "").strip()
+api_hash = os.environ.get("TELEGRAM_API_HASH", "").strip()
+phone = os.environ.get("TELEGRAM_PHONE", "").strip()
+session_string = os.environ.get("TELEGRAM_SESSION", "").strip()
 
 if not all([api_id_str, api_hash, phone, session_string]):
     logger.critical("❌ CRITICAL: One or more GitHub Secrets are missing or empty!")
-    logger.critical("Please go to your GitHub Repo -> Settings -> Secrets and variables -> Actions.")
-    logger.critical("Ensure you have added: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE, TELEGRAM_SESSION")
     sys.exit(1)
 
 try:
@@ -61,7 +60,6 @@ async def process_flowfame_with_nodriver(link):
         tab = await browser.get(TARGET_URL)
         await tab.sleep(5)
 
-        # Attempt CAPTCHA click
         try:
             iframe = await tab.select("iframe[src*='challenges.cloudflare.com']", timeout=10)
             if iframe:
@@ -71,7 +69,6 @@ async def process_flowfame_with_nodriver(link):
         except Exception as e:
             logger.warning(f"CAPTCHA interaction note: {e}")
 
-        # Find input
         link_input = await tab.select("input[placeholder*='t.me']", timeout=10)
         if not link_input:
             logger.error("Could not find the Telegram link input field.")
@@ -108,7 +105,6 @@ async def process_flowfame_with_nodriver(link):
 async def main():
     logger.info("========== SCRIPT STARTED ==========")
     
-    # --- AUTO-CREATE STATE FILE IF MISSING ---
     if not os.path.exists("state.json"):
         logger.warning("state.json missing! Creating a new one...")
         with open("state.json", "w") as f:
@@ -124,7 +120,17 @@ async def main():
 
     logger.info(f"--- 🔄 Starting Cycle {current_cycle + 1}/{MAX_CYCLES} ---")
 
-    client = TelegramClient(SESSION_STRING, API_ID, API_HASH)
+    # --- FIX: Force Telethon to use StringSession ---
+    try:
+        logger.info("Parsing Session String...")
+        session = StringSession(SESSION_STRING)
+        client = TelegramClient(session, API_ID, API_HASH)
+        logger.info("Session parsed successfully.")
+    except Exception as e:
+        logger.critical(f"❌ CRITICAL: Failed to parse TELEGRAM_SESSION. Is it a valid StringSession? Error: {e}")
+        sys.exit(1)
+    # -----------------------------------------------
+
     try:
         await client.start()
         logger.info("Telegram client connected.")
