@@ -7,12 +7,10 @@ import string
 import sys
 import traceback
 
-from seleniumbase import Driver
+from seleniumbase import SB
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
-from turnstile_solver import solve
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -73,85 +71,69 @@ def save_state(state):
     with open("state.json", "w") as f:
         json.dump(state, f, indent=2)
 
-# --- BROWSER AUTOMATION WITH turnstile_solver ---
-def process_flowfame_with_solver(link):
+# --- BROWSER AUTOMATION WITH SELENIUMBASE SB MANAGER ---
+def process_flowfame_with_sb(link):
     logger.info(f"=== STARTING BROWSER PROCESS FOR: {link} ===")
     
-    driver = None
+    # SB context manager automatically handles virtual display on Linux
     try:
-        logger.info("Launching SeleniumBase Driver in UC Mode...")
-        driver = Driver(uc=True, headless=True)
-        logger.info("Browser connected successfully.")
-        
-        driver.get(TARGET_URL)
-        logger.info("Page loaded. Waiting for initial elements...")
-        
-        # --- SOLVE CLOUDFLARE TURNSTILE ---
-        logger.info("Attempting to solve Cloudflare Turnstile with turnstile_solver...")
-        success = solve(
-            driver,
-            detect_timeout=10,   # Timeout for detecting the widget
-            solve_timeout=30,    # Timeout for solving the challenge
-            interval=1,
-            verify=True,         # Verify after solving
-            click_method="cdp",  # Use CDP for clicking (ideal for headless)
-            enable_logging=True
-        )
-        
-        if not success:
-            logger.error("Failed to solve CAPTCHA. Saving screenshot...")
-            driver.save_screenshot("error_captcha.png")
-            return False
-        logger.info("CAPTCHA solved successfully.")
+        with SB(uc=True, headless=True, incognito=True) as sb:
+            logger.info("Browser connected successfully via SB Manager.")
+            
+            sb.open(TARGET_URL)
+            logger.info("Page loaded. Waiting for initial elements...")
+            sb.sleep(3)
 
-        # --- WAIT FOR PAGE TO BE INTERACTABLE ---
-        logger.info("Waiting for Telegram link input to be interactable...")
-        wait = WebDriverWait(driver, 20)
-        link_input = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[placeholder*='t.me']"))
-        )
-        logger.info("Input field is ready.")
+            # --- SOLVE CLOUDFLARE TURNSTILE ---
+            logger.info("Attempting to solve Cloudflare Turnstile with SB...")
+            try:
+                sb.solve_captcha()
+                logger.info("CAPTCHA solving triggered.")
+            except Exception as e:
+                logger.warning(f"CAPTCHA note: {e}. Proceeding anyway...")
 
-        # Fill the form
-        link_input.clear()
-        link_input.send_keys(link)
-        logger.info("Link entered.")
+            # --- WAIT FOR PAGE TO BE INTERACTABLE ---
+            logger.info("Waiting for Telegram link input...")
+            wait = WebDriverWait(sb.driver, 20)
+            link_input = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[placeholder*='t.me']"))
+            )
+            logger.info("Input field is ready.")
 
-        # --- SUBMIT FORM ---
-        logger.info("Searching for submit button...")
-        submit_btn = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
-        )
-        submit_btn.click()
-        logger.info("Form submitted. Waiting for confirmation...")
+            # Fill the form
+            link_input.clear()
+            link_input.send_keys(link)
+            logger.info("Link entered.")
 
-        # --- WAIT FOR SUCCESS CONFIRMATION ---
-        success = False
-        for _ in range(24):  # Wait up to 2 minutes
-            driver.sleep(5)
-            page_text = driver.find_element(By.TAG_NAME, "body").text
-            if "on the way" in page_text or "free claims remaining" in page_text:
-                logger.info("🎉 Members claimed successfully!")
-                success = True
-                break
-        
-        if not success:
-            logger.warning("Timeout waiting for confirmation message.")
-            driver.save_screenshot("error_timeout.png")
-            logger.error("Saved screenshot to error_timeout.png")
-        
-        return success
+            # --- SUBMIT FORM ---
+            logger.info("Searching for submit button...")
+            submit_btn = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
+            )
+            submit_btn.click()
+            logger.info("Form submitted. Waiting for confirmation...")
+
+            # --- WAIT FOR SUCCESS CONFIRMATION ---
+            success = False
+            for _ in range(24):  # Wait up to 2 minutes
+                sb.sleep(5)
+                page_text = sb.driver.find_element(By.TAG_NAME, "body").text
+                if "on the way" in page_text or "free claims remaining" in page_text:
+                    logger.info("🎉 Members claimed successfully!")
+                    success = True
+                    break
+            
+            if not success:
+                logger.warning("Timeout waiting for confirmation message.")
+                sb.save_screenshot("error_timeout.png")
+                logger.error("Saved screenshot to error_timeout.png")
+            
+            return success
 
     except Exception as e:
         logger.critical(f"Browser execution error: {e}")
         logger.critical(traceback.format_exc())
-        if driver:
-            driver.save_screenshot("error_exception.png")
         return False
-    finally:
-        if driver:
-            driver.quit()
-            logger.info("Browser closed.")
 
 # --- MAIN EXECUTION ---
 async def main():
@@ -225,7 +207,7 @@ async def main():
 
     # Claim Members
     link_to_claim = f"https://t.me/{state['current_username']}"
-    success = process_flowfame_with_solver(link_to_claim)
+    success = process_flowfame_with_sb(link_to_claim)
 
     # Save State ONLY if successful
     if success:
